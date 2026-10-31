@@ -1,0 +1,123 @@
+syntax = "proto3";
+
+package gophkeeper.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/magicelemental11/gophkeeper/internal/proto";
+
+// AuthService registers users and issues access tokens.
+service AuthService {
+  // Register creates a user and returns a token for it.
+  rpc Register(AuthRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/register"
+      body: "*"
+    };
+  }
+  // Login checks the credentials and returns a token.
+  rpc Login(AuthRequest) returns (AuthResponse) {
+    option (google.api.http) = {
+      post: "/v1/auth/login"
+      body: "*"
+    };
+  }
+}
+
+// VaultService stores encrypted items of the authenticated user.
+// Every call requires the "authorization: Bearer <token>" metadata.
+service VaultService {
+  // Upsert creates an item (base_version 0) or replaces it when base_version matches the stored version.
+  // A version mismatch returns ABORTED with the current Item in the status details.
+  rpc Upsert(UpsertRequest) returns (Item) {
+    option (google.api.http) = {
+      put: "/v1/items/{id}"
+      body: "*"
+    };
+  }
+  // Delete turns the item into a tombstone. A version mismatch returns ABORTED like Upsert.
+  rpc Delete(DeleteRequest) returns (Item) {
+    option (google.api.http) = {delete: "/v1/items/{id}"};
+  }
+  // Get returns a single item, including tombstones.
+  rpc Get(GetRequest) returns (Item) {
+    option (google.api.http) = {get: "/v1/items/{id}"};
+  }
+  // Sync returns the items changed after since_revision in revision order. Large responses are split
+  // into pages: repeat the call with the returned revision while has_more is set.
+  rpc Sync(SyncRequest) returns (SyncResponse) {
+    option (google.api.http) = {get: "/v1/sync"};
+  }
+}
+
+// AuthRequest carries the login and the key derived from the password on the client.
+message AuthRequest {
+  // Login of the user, 3 to 64 characters.
+  string login = 1;
+  // Authentication key, exactly 32 bytes. The password itself never leaves the client.
+  bytes auth_key = 2;
+}
+
+// AuthResponse carries the access token.
+message AuthResponse {
+  // JWT valid for 24 hours.
+  string token = 1;
+}
+
+// Item is an encrypted record as the server sees it.
+message Item {
+  // Record UUID chosen by the client.
+  string id = 1;
+  // Incremented on every change, used for optimistic locking.
+  int64 version = 2;
+  // User-wide revision of the last change, used for synchronization.
+  int64 revision = 3;
+  // True for a deleted record (tombstone), the payload is empty then.
+  bool deleted = 4;
+  // Encrypted record, opaque to the server.
+  bytes payload = 5;
+  // Time of the last change on the server.
+  google.protobuf.Timestamp updated_at = 6;
+}
+
+// UpsertRequest creates or replaces an item.
+message UpsertRequest {
+  // Record UUID.
+  string id = 1;
+  // Version the change is based on, 0 for a new record.
+  int64 base_version = 2;
+  // Encrypted record, up to 11 MiB.
+  bytes payload = 3;
+}
+
+// DeleteRequest deletes an item.
+message DeleteRequest {
+  // Record UUID.
+  string id = 1;
+  // Version the deletion is based on.
+  int64 base_version = 2;
+}
+
+// GetRequest asks for a single item.
+message GetRequest {
+  // Record UUID.
+  string id = 1;
+}
+
+// SyncRequest asks for changes after a revision.
+message SyncRequest {
+  // Last revision the client has seen, 0 for everything.
+  int64 since_revision = 1;
+}
+
+// SyncResponse lists changed items in revision order.
+message SyncResponse {
+  // Items changed after since_revision, including tombstones.
+  repeated Item items = 1;
+  // Revision to send as since_revision next time: the current revision of the user,
+  // or the revision of the last returned item when has_more is set.
+  int64 revision = 2;
+  // True when the response was cut to fit the message size limit and more changes follow.
+  bool has_more = 3;
+}
