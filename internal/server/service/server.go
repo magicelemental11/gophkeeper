@@ -7,6 +7,7 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 
 	pb "github.com/magicelemental11/gophkeeper/internal/proto"
@@ -42,14 +43,21 @@ func NewServer(store Store, issuer *auth.Issuer, logger *zap.Logger, opts ...grp
 	return srv
 }
 
-// Logging logs the method, status code and duration of every call.
+// Logging logs every call with its method, status code and duration: server failures (Internal,
+// DataLoss, Unknown) at the error level, everything else, including client errors, at the debug level.
 func Logging(logger *zap.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, next grpc.UnaryHandler) (any, error) {
 		start := time.Now()
 		resp, err := next(ctx, req)
-		logger.Info("grpc request",
+		code := status.Code(err)
+		level := zap.DebugLevel
+		switch code {
+		case codes.Internal, codes.DataLoss, codes.Unknown:
+			level = zap.ErrorLevel
+		}
+		logger.Log(level, "grpc request",
 			zap.String("method", info.FullMethod),
-			zap.String("code", status.Code(err).String()),
+			zap.String("code", code.String()),
 			zap.Duration("duration", time.Since(start)),
 		)
 		return resp, err

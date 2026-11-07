@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
 
+	"github.com/magicelemental11/gophkeeper/internal/client/app"
 	"github.com/magicelemental11/gophkeeper/internal/vault"
 )
 
@@ -21,7 +23,7 @@ const (
 )
 
 func (r *runner) listCmd() *cobra.Command {
-	var kind string
+	var kind, query string
 	cmd := &cobra.Command{
 		Use:   "list",
 		Short: "List records without secrets",
@@ -39,9 +41,21 @@ func (r *runner) listCmd() *cobra.Command {
 				return err
 			}
 			defer a.Close()
-			records, err := a.List(k)
+			var res app.SearchResult
+			if query == "" {
+				res.Records, err = a.List(k)
+			} else {
+				res, err = a.Search(cmd.Context(), query)
+			}
 			if err != nil {
 				return err
+			}
+			records := res.Records
+			if query != "" && k != "" {
+				records = slices.DeleteFunc(records, func(rec vault.Record) bool { return rec.Kind() != k })
+			}
+			if res.Offline {
+				fmt.Fprintln(cmd.OutOrStdout(), "The server is unavailable, searched the local copy.")
 			}
 			if len(records) == 0 {
 				fmt.Fprintln(cmd.OutOrStdout(), "No records.")
@@ -53,6 +67,9 @@ func (r *runner) listCmd() *cobra.Command {
 				fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\n", shortID(rec), rec.Kind(), rec.Name,
 					truncate(firstLine(rec.Meta), metaWidth), rec.UpdatedAt.Local().Format(timeLayout))
 			}
+			if res.Partial {
+				fmt.Fprintln(w, "\nMore records match, refine the search.")
+			}
 			if pending := a.Pending(); pending > 0 {
 				fmt.Fprintf(w, "\n%d local changes not sent yet, run sync.\n", pending)
 			}
@@ -60,6 +77,7 @@ func (r *runner) listCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVarP(&kind, "kind", "k", "", "only records of this kind: credentials, text, binary, card, otp")
+	cmd.Flags().StringVarP(&query, "search", "q", "", "only records whose name or meta contains this text, searched on the server")
 	return cmd
 }
 

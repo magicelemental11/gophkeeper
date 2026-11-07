@@ -43,12 +43,12 @@ func TestClient(t *testing.T) {
 	c.SetToken(tok)
 
 	id := uuid.New()
-	it, err := c.Upsert(ctx, id, 0, []byte("v1"))
-	if err != nil || it.ID != id || it.Version != 1 || it.UpdatedAt.IsZero() {
+	it, err := c.Upsert(ctx, id, 0, api.Content{Name: "mail", Meta: "site", Payload: []byte("v1")})
+	if err != nil || it.ID != id || it.Version != 1 || it.UpdatedAt.IsZero() || it.Name != "mail" || it.Meta != "site" {
 		t.Fatalf("upsert: %+v, %v", it, err)
 	}
 	var conflict *api.ConflictError
-	if _, err := c.Upsert(ctx, id, 0, []byte("v2")); !errors.As(err, &conflict) || string(conflict.Current.Payload) != "v1" {
+	if _, err := c.Upsert(ctx, id, 0, api.Content{Name: "mail", Payload: []byte("v2")}); !errors.As(err, &conflict) || string(conflict.Current.Payload) != "v1" {
 		t.Fatalf("conflict: %v", err)
 	}
 	if conflict.Error() == "" {
@@ -59,6 +59,10 @@ func TestClient(t *testing.T) {
 	}
 	if _, err := c.Get(ctx, uuid.New()); !errors.Is(err, api.ErrNotFound) {
 		t.Fatalf("get missing: %v", err)
+	}
+	found, more, err := c.Search(ctx, "MA")
+	if err != nil || more || len(found) != 1 || found[0].ID != id || string(found[0].Payload) != "v1" {
+		t.Fatalf("search: %+v, %v", found, err)
 	}
 	if del, err := c.Delete(ctx, id, 1); err != nil || !del.Deleted {
 		t.Fatalf("delete: %+v, %v", del, err)
@@ -72,25 +76,40 @@ func TestClient(t *testing.T) {
 	if _, _, _, err := c.Sync(ctx, 0); !errors.Is(err, api.ErrUnavailable) {
 		t.Fatalf("down: %v", err)
 	}
+	if _, _, err := c.Search(ctx, ""); !errors.Is(err, api.ErrUnavailable) {
+		t.Fatalf("search down: %v", err)
+	}
+}
+
+func TestUntrustedServer(t *testing.T) {
+	srv := testserver.Start(t)
+	c, err := api.Dial(testserver.Address, "", srv.DialOption())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	if _, err := c.Register(context.Background(), "alice", key); !errors.Is(err, api.ErrUnavailable) {
+		t.Fatalf("self-signed certificate accepted: %v", err)
+	}
 }
 
 func TestDial(t *testing.T) {
-	c, err := api.Dial("localhost:1", "", false)
+	c, err := api.Dial("localhost:1", "")
 	if err != nil {
 		t.Fatal(err)
 	}
 	c.Close()
-	if _, err := api.Dial("localhost:1", filepath.Join(t.TempDir(), "missing.crt"), false); err == nil {
+	if _, err := api.Dial("localhost:1", filepath.Join(t.TempDir(), "missing.crt")); err == nil {
 		t.Fatal("missing CA accepted")
 	}
 	ca := filepath.Join(t.TempDir(), "ca.crt")
 	if err := os.WriteFile(ca, []byte("not a cert"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := api.Dial("localhost:1", ca, false); err == nil {
+	if _, err := api.Dial("localhost:1", ca); err == nil {
 		t.Fatal("bad CA accepted")
 	}
-	if _, err := api.Dial("bad\x00addr", "", true); err == nil {
+	if _, err := api.Dial("bad\x00addr", ""); err == nil {
 		t.Fatal("bad address accepted")
 	}
 }

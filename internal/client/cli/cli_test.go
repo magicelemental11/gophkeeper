@@ -59,8 +59,8 @@ func (d *device) run(stdin string, answers []string, args ...string) result {
 	d.t.Helper()
 	p := &prompter{answers: answers}
 	root := cli.NewRoot(cli.Deps{
-		Dial: func(string, string, bool) (app.Remote, error) {
-			return api.Dial(testserver.Address, "", true, d.srv.DialOption())
+		Dial: func(string, string) (app.Remote, error) {
+			return api.Dial(testserver.Address, d.srv.CA, d.srv.DialOption())
 		},
 		Derive: func(login, password string) (crypto.Keys, error) {
 			return crypto.DeriveWith(crypto.Params{Time: 1, Memory: 64, Threads: 1}, login, password)
@@ -148,7 +148,7 @@ func TestScenario(t *testing.T) {
 	if res.code != 0 || len(res.prompts) != 1 || res.prompts[0] != "CVV: " {
 		t.Fatalf("add card: %+v", res)
 	}
-	laptop.ok("add", "otp", "--name", "github", "--uri", "otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP")
+	laptop.ok("add", "otp", "--name", "github", "--uri", "otpauth://totp/GitHub:alice?secret="+otpSecret)
 
 	phone := newDevice(t, srv)
 	contains(t, phone.ok("login", "--login", "alice"), "Logged in as alice", "received 5")
@@ -157,6 +157,10 @@ func TestScenario(t *testing.T) {
 	lacks(t, list, "site-password", "recovery codes", "987", "4111")
 	contains(t, phone.ok("list", "--kind", "card"), "visa")
 	lacks(t, phone.ok("list", "--kind", "card"), "mail")
+	found := phone.ok("list", "--search", "MAIL")
+	contains(t, found, "mail", "https://mail.example")
+	lacks(t, found, "visa", "github")
+	contains(t, phone.ok("list", "-q", "mail", "--kind", "card"), "No records.")
 
 	shown := phone.ok("show", "mail")
 	contains(t, shown, "alice@example.com", "********", "recovery codes: 111 222")
@@ -171,7 +175,7 @@ func TestScenario(t *testing.T) {
 	contains(t, phone.ok("show", "note"), "note from stdin")
 	contains(t, phone.ok("show", "photo"), "photo.png", "4 bytes")
 	contains(t, phone.ok("show", "github"), "GitHub", "alice", "6 digits")
-	lacks(t, phone.ok("show", "github"), "JBSWY3DPEHPK3PXP")
+	lacks(t, phone.ok("show", "github"), otpSecret)
 	contains(t, phone.ok("otp", "github"), "(valid for 15 s)")
 
 	out := filepath.Join(t.TempDir(), "restored.png")
@@ -266,6 +270,7 @@ func TestErrors(t *testing.T) {
 	srv.Down()
 	contains(t, d.ok("add", "text", "--name", "offline", "--content", "x"), "Saved locally")
 	contains(t, d.ok("list"), "offline", "1 local changes not sent yet")
+	contains(t, d.ok("list", "-q", "off"), "searched the local copy", "offline")
 	d.fail("server is unavailable", "sync")
 	srv.Up()
 	contains(t, d.ok("sync"), "sent 1")
@@ -274,6 +279,7 @@ func TestErrors(t *testing.T) {
 func TestRegisterPrompts(t *testing.T) {
 	d := newDevice(t, testserver.Start(t))
 	t.Setenv("GOPHKEEPER_PASSWORD", "")
+	os.Unsetenv("GOPHKEEPER_PASSWORD")
 	if res := d.run("", []string{password, "different"}, "register", "-l", "alice"); !strings.Contains(res.err, "do not match") {
 		t.Fatalf("mismatch: %+v", res)
 	}
@@ -302,9 +308,9 @@ func TestMetaFileAndTextFile(t *testing.T) {
 	d.fail("no such file", "add", "text", "--name", "x", "--content", "a", "--meta-file", filepath.Join(dir, "missing"))
 	d.ok("edit", "t", "--file", text, "--meta", "")
 	lacks(t, d.ok("show", "t"), "Meta:")
-	d.ok("add", "otp", "--name", "o", "--secret", "JBSWY3DPEHPK3PXP", "--issuer", "X", "--account", "a", "--period", "60", "--algorithm", "sha256")
-	contains(t, d.ok("show", "o", "--reveal"), "JBSWY3DPEHPK3PXP", "60 s, SHA256")
-	d.ok("edit", "o", "--uri", "otpauth://totp/Y:b?secret=JBSWY3DPEHPK3PXP", "--account", "c", "--secret", "JBSWY3DPEHPK3PXQ", "--issuer", "Z", "--period", "30", "--algorithm", "SHA1")
-	contains(t, d.ok("show", "o", "-r"), "Z", "c", "JBSWY3DPEHPK3PXQ")
+	d.ok("add", "otp", "--name", "o", "--secret", otpSecret, "--issuer", "X", "--account", "a", "--period", "60", "--algorithm", "sha256")
+	contains(t, d.ok("show", "o", "--reveal"), otpSecret, "60 s, SHA256")
+	d.ok("edit", "o", "--uri", "otpauth://totp/Y:b?secret="+otpSecret, "--account", "c", "--secret", otpSecret2, "--issuer", "Z", "--period", "30", "--algorithm", "SHA1")
+	contains(t, d.ok("show", "o", "-r"), "Z", "c", otpSecret2)
 	d.fail("OTP URI", "edit", "o", "--uri", "https://x")
 }

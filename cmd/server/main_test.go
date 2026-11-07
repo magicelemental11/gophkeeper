@@ -10,10 +10,11 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/credentials"
 
 	pb "github.com/magicelemental11/gophkeeper/internal/proto"
 	"github.com/magicelemental11/gophkeeper/internal/server/config"
+	"github.com/magicelemental11/gophkeeper/internal/testcert"
 )
 
 func listen(t *testing.T) net.Listener {
@@ -31,7 +32,8 @@ func TestRunErrors(t *testing.T) {
 	if err := run(ctx, cfg, listen(t), zap.NewNop()); err == nil {
 		t.Fatal("expected TLS error")
 	}
-	cfg.Insecure = true
+	certs := testcert.Write(t, t.TempDir())
+	cfg.TLSCert, cfg.TLSKey = certs.Cert, certs.Key
 	if err := run(ctx, cfg, listen(t), zap.NewNop()); err == nil {
 		t.Fatal("expected database error")
 	}
@@ -45,17 +47,22 @@ func TestRunServesAndStops(t *testing.T) {
 	lis := listen(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	certs := testcert.Write(t, t.TempDir())
 	go func() {
-		done <- run(ctx, config.Config{DatabaseDSN: dsn, JWTSecret: "s", Insecure: true}, lis, zap.NewNop())
+		done <- run(ctx, config.Config{DatabaseDSN: dsn, JWTSecret: "s", TLSCert: certs.Cert, TLSKey: certs.Key}, lis, zap.NewNop())
 	}()
 
-	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(insecure.NewCredentials()))
+	creds, err := credentials.NewClientTLSFromFile(certs.CA, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	conn, err := grpc.NewClient(lis.Addr().String(), grpc.WithTransportCredentials(creds))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer conn.Close()
 	login := "smoke-" + time.Now().Format("150405.000000")
-	_, err = pb.NewAuthServiceClient(conn).Register(ctx, &pb.AuthRequest{Login: login, AuthKey: bytes.Repeat([]byte{1}, 32)})
+	_, err = pb.NewAuthServiceClient(conn).Register(ctx, pb.AuthRequest_builder{Login: login, AuthKey: bytes.Repeat([]byte{1}, 32)}.Build())
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -171,6 +171,7 @@ const (
 	VaultService_Delete_FullMethodName = "/gophkeeper.v1.VaultService/Delete"
 	VaultService_Get_FullMethodName    = "/gophkeeper.v1.VaultService/Get"
 	VaultService_Sync_FullMethodName   = "/gophkeeper.v1.VaultService/Sync"
+	VaultService_Search_FullMethodName = "/gophkeeper.v1.VaultService/Search"
 )
 
 // VaultServiceClient is the client API for VaultService service.
@@ -190,6 +191,9 @@ type VaultServiceClient interface {
 	// Sync returns the items changed after since_revision in revision order. Large responses are split
 	// into pages: repeat the call with the returned revision while has_more is set.
 	Sync(ctx context.Context, in *SyncRequest, opts ...grpc.CallOption) (*SyncResponse, error)
+	// Search returns the live items whose name or meta contains the query, ignoring case, ordered by name.
+	// The response is cut to fit the message size limit, has_more tells that more items match.
+	Search(ctx context.Context, in *SearchRequest, opts ...grpc.CallOption) (*SearchResponse, error)
 }
 
 type vaultServiceClient struct {
@@ -240,6 +244,16 @@ func (c *vaultServiceClient) Sync(ctx context.Context, in *SyncRequest, opts ...
 	return out, nil
 }
 
+func (c *vaultServiceClient) Search(ctx context.Context, in *SearchRequest, opts ...grpc.CallOption) (*SearchResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchResponse)
+	err := c.cc.Invoke(ctx, VaultService_Search_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // VaultServiceServer is the server API for VaultService service.
 // All implementations must embed UnimplementedVaultServiceServer
 // for forward compatibility.
@@ -257,6 +271,9 @@ type VaultServiceServer interface {
 	// Sync returns the items changed after since_revision in revision order. Large responses are split
 	// into pages: repeat the call with the returned revision while has_more is set.
 	Sync(context.Context, *SyncRequest) (*SyncResponse, error)
+	// Search returns the live items whose name or meta contains the query, ignoring case, ordered by name.
+	// The response is cut to fit the message size limit, has_more tells that more items match.
+	Search(context.Context, *SearchRequest) (*SearchResponse, error)
 	mustEmbedUnimplementedVaultServiceServer()
 }
 
@@ -278,6 +295,9 @@ func (UnimplementedVaultServiceServer) Get(context.Context, *GetRequest) (*Item,
 }
 func (UnimplementedVaultServiceServer) Sync(context.Context, *SyncRequest) (*SyncResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Sync not implemented")
+}
+func (UnimplementedVaultServiceServer) Search(context.Context, *SearchRequest) (*SearchResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method Search not implemented")
 }
 func (UnimplementedVaultServiceServer) mustEmbedUnimplementedVaultServiceServer() {}
 func (UnimplementedVaultServiceServer) testEmbeddedByValue()                      {}
@@ -372,6 +392,24 @@ func _VaultService_Sync_Handler(srv interface{}, ctx context.Context, dec func(i
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VaultService_Search_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VaultServiceServer).Search(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VaultService_Search_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VaultServiceServer).Search(ctx, req.(*SearchRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // VaultService_ServiceDesc is the grpc.ServiceDesc for VaultService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -394,6 +432,10 @@ var VaultService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Sync",
 			Handler:    _VaultService_Sync_Handler,
+		},
+		{
+			MethodName: "Search",
+			Handler:    _VaultService_Search_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

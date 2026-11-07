@@ -18,7 +18,7 @@ func (r *runner) tuiCmd() *cobra.Command {
 				return err
 			}
 			defer a.Close()
-			model := tui.New(cmd.Context(), a, r.config().Server, r.deps.Now)
+			model := tui.New(cmd.Context(), a, r.cfg.Server, r.deps.Now)
 			_, err = tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(cmd.Context()),
 				tea.WithInput(cmd.InOrStdin()), tea.WithOutput(cmd.OutOrStdout())).Run()
 			return err

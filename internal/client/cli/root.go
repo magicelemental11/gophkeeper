@@ -19,7 +19,7 @@ import (
 
 // Deps are the outside dependencies of the commands, replaced in tests.
 type Deps struct {
-	Dial     func(server, caPath string, insecure bool) (app.Remote, error)
+	Dial     func(server, caPath string) (app.Remote, error)
 	Derive   func(login, password string) (crypto.Keys, error)
 	Prompter Prompter
 	Now      func() time.Time
@@ -28,8 +28,8 @@ type Deps struct {
 // DefaultDeps connects with api.Dial, derives keys with crypto.Derive and prompts on the terminal.
 func DefaultDeps() Deps {
 	return Deps{
-		Dial: func(server, caPath string, insecure bool) (app.Remote, error) {
-			return api.Dial(server, caPath, insecure)
+		Dial: func(server, caPath string) (app.Remote, error) {
+			return api.Dial(server, caPath)
 		},
 		Derive:   crypto.Derive,
 		Prompter: NewTerminalPrompter(os.Stdin, os.Stderr),
@@ -40,6 +40,7 @@ func DefaultDeps() Deps {
 type runner struct {
 	deps  Deps
 	flags config.Config
+	cfg   config.Config
 }
 
 // NewRoot returns the root command with all subcommands.
@@ -50,12 +51,16 @@ func NewRoot(deps Deps) *cobra.Command {
 		Short:         "GophKeeper password manager client",
 		SilenceUsage:  true,
 		SilenceErrors: true,
+		PersistentPreRunE: func(*cobra.Command, []string) error {
+			var err error
+			r.cfg, err = config.Resolve(r.flags)
+			return err
+		},
 	}
 	pf := root.PersistentFlags()
 	pf.StringVarP(&r.flags.Server, "server", "s", "", "server address (env "+config.EnvServer+", default "+config.DefaultServer+")")
 	pf.StringVar(&r.flags.CA, "ca", "", "CA certificate to verify the server (env "+config.EnvCA+")")
 	pf.StringVar(&r.flags.DataDir, "data-dir", "", "local data directory (env "+config.EnvDataDir+")")
-	pf.BoolVar(&r.flags.Insecure, "insecure", false, "connect without TLS (local tests only)")
 
 	root.AddCommand(
 		versionCmd(),
@@ -86,16 +91,12 @@ func versionCmd() *cobra.Command {
 	}
 }
 
-func (r *runner) config() config.Config {
-	return config.Resolve(r.flags)
-}
-
 func (r *runner) open() (*app.App, error) {
-	cfg := r.config()
+	cfg := r.cfg
 	return app.New(app.Config{
 		DataDir: cfg.DataDir,
 		Dial: func(server string) (app.Remote, error) {
-			return r.deps.Dial(server, cfg.CA, cfg.Insecure)
+			return r.deps.Dial(server, cfg.CA)
 		},
 		Derive: r.deps.Derive,
 		Now:    r.deps.Now,
@@ -103,8 +104,8 @@ func (r *runner) open() (*app.App, error) {
 }
 
 func (r *runner) masterPassword(prompt string) (string, error) {
-	if p := os.Getenv(config.EnvPassword); p != "" {
-		return p, nil
+	if p, ok, err := config.Password(); err != nil || ok {
+		return p, err
 	}
 	return r.deps.Prompter.Password(prompt)
 }

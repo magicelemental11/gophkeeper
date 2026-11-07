@@ -13,7 +13,6 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
@@ -34,14 +33,23 @@ var (
 	ErrUnavailable     = errors.New("server is unavailable")
 )
 
-// Item is an encrypted record as stored on the server.
+// Item is a record as stored on the server: the name and meta in plain text and the encrypted payload.
 type Item struct {
 	ID        uuid.UUID
 	Version   int64
 	Revision  int64
 	Deleted   bool
+	Name      string
+	Meta      string
 	Payload   []byte
 	UpdatedAt time.Time
+}
+
+// Content is the part of an item sent by Upsert.
+type Content struct {
+	Name    string
+	Meta    string
+	Payload []byte
 }
 
 // ConflictError is returned when the base version is stale; Current is the item on the server.
@@ -64,14 +72,11 @@ type Client struct {
 	token string
 }
 
-// Dial returns a client of the server at addr. TLS is verified against the CA certificate at caPath,
-// or against the system roots when caPath is empty. insecure disables TLS and is meant for local tests.
-func Dial(addr, caPath string, insecureConn bool, opts ...grpc.DialOption) (*Client, error) {
+// Dial returns a client of the server at addr over TLS. The server certificate is verified against
+// the CA certificate at caPath, or against the system roots when caPath is empty.
+func Dial(addr, caPath string, opts ...grpc.DialOption) (*Client, error) {
 	creds := credentials.NewTLS(&tls.Config{MinVersion: tls.VersionTLS12})
-	switch {
-	case insecureConn:
-		creds = insecure.NewCredentials()
-	case caPath != "":
+	if caPath != "" {
 		var err error
 		if creds, err = credentials.NewClientTLSFromFile(caPath, ""); err != nil {
 			return nil, fmt.Errorf("load CA: %w", err)
@@ -104,7 +109,7 @@ func (c *Client) SetToken(token string) {
 func (c *Client) Register(ctx context.Context, login string, authKey []byte) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
-	resp, err := c.auth.Register(ctx, &pb.AuthRequest{Login: login, AuthKey: authKey})
+	resp, err := c.auth.Register(ctx, pb.AuthRequest_builder{Login: login, AuthKey: authKey}.Build())
 	if err != nil {
 		return "", mapError(err)
 	}
@@ -115,7 +120,7 @@ func (c *Client) Register(ctx context.Context, login string, authKey []byte) (st
 func (c *Client) Login(ctx context.Context, login string, authKey []byte) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, CallTimeout)
 	defer cancel()
-	resp, err := c.auth.Login(ctx, &pb.AuthRequest{Login: login, AuthKey: authKey})
+	resp, err := c.auth.Login(ctx, pb.AuthRequest_builder{Login: login, AuthKey: authKey}.Build())
 	if err != nil {
 		return "", mapError(err)
 	}
@@ -123,24 +128,31 @@ func (c *Client) Login(ctx context.Context, login string, authKey []byte) (strin
 }
 
 // Upsert creates (baseVersion 0) or replaces an item.
-func (c *Client) Upsert(ctx context.Context, id uuid.UUID, baseVersion int64, payload []byte) (Item, error) {
+func (c *Client) Upsert(ctx context.Context, id uuid.UUID, baseVersion int64, content Content) (Item, error) {
 	ctx, cancel := c.callContext(ctx)
 	defer cancel()
-	return item(c.vault.Upsert(ctx, &pb.UpsertRequest{Id: id.String(), BaseVersion: baseVersion, Payload: payload}))
+	req := pb.UpsertRequest_builder{
+		Id:          id.String(),
+		BaseVersion: baseVersion,
+		Name:        content.Name,
+		Meta:        content.Meta,
+		Payload:     content.Payload,
+	}.Build()
+	return item(c.vault.Upsert(ctx, req))
 }
 
 // Delete turns an item into a tombstone.
 func (c *Client) Delete(ctx context.Context, id uuid.UUID, baseVersion int64) (Item, error) {
 	ctx, cancel := c.callContext(ctx)
 	defer cancel()
-	return item(c.vault.Delete(ctx, &pb.DeleteRequest{Id: id.String(), BaseVersion: baseVersion}))
+	return item(c.vault.Delete(ctx, pb.DeleteRequest_builder{Id: id.String(), BaseVersion: baseVersion}.Build()))
 }
 
 // Get returns a single item.
 func (c *Client) Get(ctx context.Context, id uuid.UUID) (Item, error) {
 	ctx, cancel := c.callContext(ctx)
 	defer cancel()
-	return item(c.vault.Get(ctx, &pb.GetRequest{Id: id.String()}))
+	return item(c.vault.Get(ctx, pb.GetRequest_builder{Id: id.String()}.Build()))
 }
 
 // Sync returns a page of items changed after since, the revision to continue from and whether
@@ -148,19 +160,43 @@ func (c *Client) Get(ctx context.Context, id uuid.UUID) (Item, error) {
 func (c *Client) Sync(ctx context.Context, since int64) ([]Item, int64, bool, error) {
 	ctx, cancel := c.callContext(ctx)
 	defer cancel()
-	resp, err := c.vault.Sync(ctx, &pb.SyncRequest{SinceRevision: since})
+	resp, err := c.vault.Sync(ctx, pb.SyncRequest_builder{SinceRevision: since}.Build())
 	if err != nil {
 		return nil, 0, false, mapError(err)
 	}
-	items := make([]Item, 0, len(resp.GetItems()))
-	for _, p := range resp.GetItems() {
+	items, err := fromProtoList(resp.GetItems())
+	if err != nil {
+		return nil, 0, false, err
+	}
+	return items, resp.GetRevision(), resp.GetHasMore(), nil
+}
+
+// Search returns the live items whose name or meta contains query, ignoring case, and whether more
+// items match than fit one response.
+func (c *Client) Search(ctx context.Context, query string) ([]Item, bool, error) {
+	ctx, cancel := c.callContext(ctx)
+	defer cancel()
+	resp, err := c.vault.Search(ctx, pb.SearchRequest_builder{Query: query}.Build())
+	if err != nil {
+		return nil, false, mapError(err)
+	}
+	items, err := fromProtoList(resp.GetItems())
+	if err != nil {
+		return nil, false, err
+	}
+	return items, resp.GetHasMore(), nil
+}
+
+func fromProtoList(list []*pb.Item) ([]Item, error) {
+	items := make([]Item, 0, len(list))
+	for _, p := range list {
 		it, err := fromProto(p)
 		if err != nil {
-			return nil, 0, false, err
+			return nil, err
 		}
 		items = append(items, it)
 	}
-	return items, resp.GetRevision(), resp.GetHasMore(), nil
+	return items, nil
 }
 
 func (c *Client) callContext(ctx context.Context) (context.Context, context.CancelFunc) {
@@ -188,6 +224,8 @@ func fromProto(p *pb.Item) (Item, error) {
 		Version:   p.GetVersion(),
 		Revision:  p.GetRevision(),
 		Deleted:   p.GetDeleted(),
+		Name:      p.GetName(),
+		Meta:      p.GetMeta(),
 		Payload:   p.GetPayload(),
 		UpdatedAt: p.GetUpdatedAt().AsTime(),
 	}, nil

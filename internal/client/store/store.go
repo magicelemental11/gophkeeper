@@ -57,13 +57,16 @@ func ClearSession(dir string) error {
 	return nil
 }
 
-// Entry is a cached encrypted item. Dirty entries have local changes not yet sent to the server;
-// Version is the server version the change is based on, 0 for a record the server has not seen.
+// Entry is a cached item: the name and meta in plain text and the encrypted payload, as on the server.
+// Dirty entries have local changes not yet sent to the server; Version is the server version the change
+// is based on, 0 for a record the server has not seen.
 type Entry struct {
 	Version  int64  `json:"version"`
 	Revision int64  `json:"revision"`
 	Deleted  bool   `json:"deleted"`
 	Dirty    bool   `json:"dirty"`
+	Name     string `json:"name"`
+	Meta     string `json:"meta"`
 	Payload  []byte `json:"payload"`
 }
 

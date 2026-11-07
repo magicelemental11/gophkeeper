@@ -50,14 +50,10 @@ func main() {
 }
 
 func run(ctx context.Context, cfg config.Config, lis net.Listener, logger *zap.Logger) error {
-	var opts []grpc.ServerOption
-	if !cfg.Insecure {
-		creds, err := credentials.NewServerTLSFromFile(cfg.TLSCert, cfg.TLSKey)
-		if err != nil {
-			lis.Close()
-			return fmt.Errorf("load TLS: %w", err)
-		}
-		opts = append(opts, grpc.Creds(creds))
+	creds, err := credentials.NewServerTLSFromFile(cfg.TLSCert, cfg.TLSKey)
+	if err != nil {
+		lis.Close()
+		return fmt.Errorf("load TLS: %w", err)
 	}
 
 	store, err := storage.New(ctx, cfg.DatabaseDSN)
@@ -67,10 +63,10 @@ func run(ctx context.Context, cfg config.Config, lis net.Listener, logger *zap.L
 	}
 	defer store.Close()
 
-	srv := service.NewServer(store, auth.NewIssuer(cfg.JWTSecret, auth.TokenTTL), logger, opts...)
+	srv := service.NewServer(store, auth.NewIssuer(cfg.JWTSecret, auth.TokenTTL), logger, grpc.Creds(creds))
 	errCh := make(chan error, 1)
 	go func() { errCh <- srv.Serve(lis) }()
-	logger.Info("server started", zap.String("address", lis.Addr().String()), zap.Bool("tls", !cfg.Insecure))
+	logger.Info("server started", zap.String("address", lis.Addr().String()))
 
 	select {
 	case err := <-errCh:

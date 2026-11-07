@@ -25,7 +25,7 @@ func newApp(t *testing.T, srv *testserver.Server, dir string) *app.App {
 	a, err := app.New(app.Config{
 		DataDir: dir,
 		Dial: func(string) (app.Remote, error) {
-			return api.Dial(testserver.Address, "", true, srv.DialOption())
+			return api.Dial(testserver.Address, srv.CA, srv.DialOption())
 		},
 		Derive: func(login, password string) (crypto.Keys, error) {
 			return crypto.DeriveWith(crypto.Params{Time: 1, Memory: 64, Threads: 1}, login, password)
@@ -136,7 +136,7 @@ func TestScenario(t *testing.T) {
 	d.addRecord("1", "mail", "https://mail.example", "alice", "site-password")
 	d.addRecord("2", "note", "", "hello text")
 	d.addRecord("4", "visa", "bank", "4111111111111111", "ALICE", "01/20", "123")
-	d.addRecord("5", "github", "", "otpauth://totp/GitHub:alice?secret=JBSWY3DPEHPK3PXP")
+	d.addRecord("5", "github", "", "otpauth://totp/GitHub:alice?secret="+otpSecret)
 	file := filepath.Join(t.TempDir(), "doc.pdf")
 	os.WriteFile(file, []byte("pdf"), 0o600)
 	d.addRecord("3", "doc", "", file)
@@ -151,7 +151,7 @@ func TestScenario(t *testing.T) {
 	d.sees("doc.pdf", "3 bytes")
 	d.press("esc", "down", "enter")
 	d.sees("GitHub", "Code: ", "(20 s left)")
-	d.lacks("JBSWY3DPEHPK3PXP")
+	d.lacks(otpSecret)
 	d.press("esc", "down", "down", "down", "enter")
 	d.sees("****1111", "01/20 (expired)", "CVV:    ********")
 
@@ -248,7 +248,7 @@ func TestUnlockAndErrors(t *testing.T) {
 	d.press("esc", "a", "5")
 	d.typ("otp")
 	d.press("tab", "tab")
-	d.typ("JBSWY3DPEHPK3PXP")
+	d.typ(otpSecret)
 	d.press("tab")
 	d.typ("Issuer")
 	d.press("shift+tab", "up", "enter", "enter", "enter")

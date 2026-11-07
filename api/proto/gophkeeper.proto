@@ -1,10 +1,13 @@
-syntax = "proto3";
+edition = "2023";
 
 package gophkeeper.v1;
 
 import "google/api/annotations.proto";
+import "google/protobuf/go_features.proto";
 import "google/protobuf/timestamp.proto";
 
+option features.field_presence = IMPLICIT;
+option features.(pb.go).api_level = API_OPAQUE;
 option go_package = "github.com/magicelemental11/gophkeeper/internal/proto";
 
 // AuthService registers users and issues access tokens.
@@ -49,6 +52,11 @@ service VaultService {
   rpc Sync(SyncRequest) returns (SyncResponse) {
     option (google.api.http) = {get: "/v1/sync"};
   }
+  // Search returns the live items whose name or meta contains the query, ignoring case, ordered by name.
+  // The response is cut to fit the message size limit, has_more tells that more items match.
+  rpc Search(SearchRequest) returns (SearchResponse) {
+    option (google.api.http) = {get: "/v1/items"};
+  }
 }
 
 // AuthRequest carries the login and the key derived from the password on the client.
@@ -75,10 +83,14 @@ message Item {
   int64 revision = 3;
   // True for a deleted record (tombstone), the payload is empty then.
   bool deleted = 4;
-  // Encrypted record, opaque to the server.
+  // Encrypted record data, opaque to the server.
   bytes payload = 5;
   // Time of the last change on the server.
   google.protobuf.Timestamp updated_at = 6;
+  // Record name in plain text, empty for a tombstone.
+  string name = 7;
+  // Free-text meta information in plain text, empty for a tombstone.
+  string meta = 8;
 }
 
 // UpsertRequest creates or replaces an item.
@@ -87,8 +99,12 @@ message UpsertRequest {
   string id = 1;
   // Version the change is based on, 0 for a new record.
   int64 base_version = 2;
-  // Encrypted record, up to 11 MiB.
+  // Encrypted record data, up to 11 MiB.
   bytes payload = 3;
+  // Record name, 1 to 256 characters.
+  string name = 4;
+  // Free-text meta information, up to 64 KiB.
+  string meta = 5;
 }
 
 // DeleteRequest deletes an item.
@@ -120,4 +136,18 @@ message SyncResponse {
   int64 revision = 2;
   // True when the response was cut to fit the message size limit and more changes follow.
   bool has_more = 3;
+}
+
+// SearchRequest asks for items by name or meta.
+message SearchRequest {
+  // Substring to look for in the name or meta, ignoring case. An empty query matches every live item.
+  string query = 1;
+}
+
+// SearchResponse lists the matching items ordered by name.
+message SearchResponse {
+  // Matching items, tombstones excluded.
+  repeated Item items = 1;
+  // True when the response was cut to fit the message size limit.
+  bool has_more = 2;
 }

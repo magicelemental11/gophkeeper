@@ -81,9 +81,10 @@ func (a *App) push(ctx context.Context, remote Remote, id uuid.UUID, rep *Report
 		return nil
 	}
 
-	it, err := remote.Upsert(ctx, id, e.Version, e.Payload)
+	content := api.Content{Name: e.Name, Meta: e.Meta, Payload: e.Payload}
+	it, err := remote.Upsert(ctx, id, e.Version, content)
 	if errors.Is(err, api.ErrNotFound) {
-		it, err = remote.Upsert(ctx, id, 0, e.Payload)
+		it, err = remote.Upsert(ctx, id, 0, content)
 	}
 	if errors.As(err, &conflict) {
 		return a.resolve(ctx, remote, id, e, conflict.Current, rep)
@@ -100,7 +101,7 @@ func (a *App) resolve(ctx context.Context, remote Remote, id uuid.UUID, local st
 	if a.encKey == nil {
 		return ErrLocked
 	}
-	r, err := vault.Decrypt(id, local.Payload, a.encKey)
+	r, err := vault.Decrypt(id, sealedEntry(local), a.encKey)
 	if err != nil {
 		return fmt.Errorf("decrypt local copy of %s: %w", id, err)
 	}
@@ -110,12 +111,12 @@ func (a *App) resolve(ctx context.Context, remote Remote, id uuid.UUID, local st
 	r.ID = uuid.New()
 	r.Name = conflictName(r.Name, a.cfg.Now().Format(conflictTimeFormat))
 	r.Touch()
-	payload, err := vault.Encrypt(r, a.encKey)
+	sealed, err := vault.Encrypt(r, a.encKey)
 	if err != nil {
 		return err
 	}
-	a.cache.Put(r.ID, store.Entry{Dirty: true, Payload: payload})
-	it, err := remote.Upsert(ctx, r.ID, 0, payload)
+	a.cache.Put(r.ID, store.Entry{Dirty: true, Name: sealed.Name, Meta: sealed.Meta, Payload: sealed.Payload})
+	it, err := remote.Upsert(ctx, r.ID, 0, api.Content{Name: sealed.Name, Meta: sealed.Meta, Payload: sealed.Payload})
 	if err != nil {
 		return err
 	}
@@ -141,7 +142,7 @@ func (a *App) store(it api.Item) {
 		a.cache.Remove(it.ID)
 		return
 	}
-	a.cache.Put(it.ID, store.Entry{Version: it.Version, Revision: it.Revision, Payload: it.Payload})
+	a.cache.Put(it.ID, store.Entry{Version: it.Version, Revision: it.Revision, Name: it.Name, Meta: it.Meta, Payload: it.Payload})
 }
 
 func conflictName(name, when string) string {

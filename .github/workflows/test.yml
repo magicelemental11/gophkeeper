@@ -13,7 +13,7 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_DB: gophkeeper
         ports:
           - 5432:5432
@@ -24,7 +24,7 @@ jobs:
           --health-retries 5
 
     env:
-      TEST_DATABASE_DSN: postgres://postgres:postgres@localhost:5432/gophkeeper?sslmode=disable
+      TEST_DATABASE_DSN: postgres://postgres@localhost:5432/gophkeeper?sslmode=disable
 
     steps:
       - uses: actions/checkout@v4

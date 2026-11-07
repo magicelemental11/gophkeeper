@@ -4,6 +4,7 @@ package memstore
 import (
 	"context"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -63,7 +64,7 @@ func (s *Store) UserByLogin(_ context.Context, login string) (storage.User, erro
 }
 
 // Upsert behaves like storage.Storage.Upsert.
-func (s *Store) Upsert(_ context.Context, userID int64, id uuid.UUID, baseVersion int64, payload []byte) (storage.Item, error) {
+func (s *Store) Upsert(_ context.Context, userID int64, id uuid.UUID, baseVersion int64, c storage.Content) (storage.Item, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	u, err := s.user(userID)
@@ -77,7 +78,7 @@ func (s *Store) Upsert(_ context.Context, userID int64, id uuid.UUID, baseVersio
 	case ok && cur.Version != baseVersion:
 		return storage.Item{}, &storage.ConflictError{Current: cur}
 	}
-	return u.put(storage.Item{ID: id, Version: cur.Version + 1, Payload: slices.Clone(payload)}), nil
+	return u.put(storage.Item{ID: id, Version: cur.Version + 1, Name: c.Name, Meta: c.Meta, Payload: slices.Clone(c.Payload)}), nil
 }
 
 // Delete behaves like storage.Storage.Delete.
@@ -141,6 +142,35 @@ func (s *Store) ChangesSince(_ context.Context, userID int64, since int64, maxBy
 		ch.Revision, ch.More = ch.Items[len(ch.Items)-1].Revision, true
 	}
 	return ch, nil
+}
+
+// Search behaves like storage.Storage.Search.
+func (s *Store) Search(_ context.Context, userID int64, query string, maxBytes int) ([]storage.Item, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	u, err := s.user(userID)
+	if err != nil {
+		return nil, false, err
+	}
+	query = strings.ToLower(query)
+	var out []storage.Item
+	for _, it := range u.items {
+		if !it.Deleted && (strings.Contains(strings.ToLower(it.Name), query) || strings.Contains(strings.ToLower(it.Meta), query)) {
+			out = append(out, it)
+		}
+	}
+	slices.SortFunc(out, func(a, b storage.Item) int {
+		if c := strings.Compare(strings.ToLower(a.Name), strings.ToLower(b.Name)); c != 0 {
+			return c
+		}
+		return strings.Compare(a.ID.String(), b.ID.String())
+	})
+	sizes := make([]int, len(out))
+	for i, it := range out {
+		sizes[i] = len(it.Payload)
+	}
+	n := storage.PageLen(sizes, maxBytes)
+	return out[:n], n < len(out), nil
 }
 
 func (s *Store) user(id int64) (*user, error) {

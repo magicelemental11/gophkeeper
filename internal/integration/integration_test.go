@@ -2,23 +2,14 @@ package integration
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/x509"
-	"crypto/x509/pkix"
-	"encoding/pem"
-	"math/big"
 	"net"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
 
 	"github.com/magicelemental11/gophkeeper/internal/client/api"
 	"github.com/magicelemental11/gophkeeper/internal/client/app"
@@ -26,57 +17,9 @@ import (
 	"github.com/magicelemental11/gophkeeper/internal/server/auth"
 	"github.com/magicelemental11/gophkeeper/internal/server/service"
 	"github.com/magicelemental11/gophkeeper/internal/server/storage"
+	"github.com/magicelemental11/gophkeeper/internal/testcert"
 	"github.com/magicelemental11/gophkeeper/internal/vault"
 )
-
-func writePEM(t *testing.T, path, kind string, der []byte) {
-	t.Helper()
-	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: kind, Bytes: der}), 0o600); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func genCerts(t *testing.T, dir string) (caPath, certPath, keyPath string) {
-	t.Helper()
-	caKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	caTmpl := &x509.Certificate{
-		SerialNumber:          big.NewInt(1),
-		Subject:               pkix.Name{CommonName: "test CA"},
-		NotBefore:             time.Now().Add(-time.Hour),
-		NotAfter:              time.Now().Add(time.Hour),
-		IsCA:                  true,
-		BasicConstraintsValid: true,
-		KeyUsage:              x509.KeyUsageCertSign,
-	}
-	caDER, err := x509.CreateCertificate(rand.Reader, caTmpl, caTmpl, &caKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	caCert, _ := x509.ParseCertificate(caDER)
-
-	srvKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	srvTmpl := &x509.Certificate{
-		SerialNumber: big.NewInt(2),
-		Subject:      pkix.Name{CommonName: "localhost"},
-		DNSNames:     []string{"localhost"},
-		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
-		NotBefore:    time.Now().Add(-time.Hour),
-		NotAfter:     time.Now().Add(time.Hour),
-		KeyUsage:     x509.KeyUsageDigitalSignature,
-		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
-	}
-	srvDER, err := x509.CreateCertificate(rand.Reader, srvTmpl, caCert, &srvKey.PublicKey, caKey)
-	if err != nil {
-		t.Fatal(err)
-	}
-	keyDER, _ := x509.MarshalECPrivateKey(srvKey)
-
-	caPath, certPath, keyPath = filepath.Join(dir, "ca.crt"), filepath.Join(dir, "server.crt"), filepath.Join(dir, "server.key")
-	writePEM(t, caPath, "CERTIFICATE", caDER)
-	writePEM(t, certPath, "CERTIFICATE", srvDER)
-	writePEM(t, keyPath, "EC PRIVATE KEY", keyDER)
-	return caPath, certPath, keyPath
-}
 
 func startServer(t *testing.T) (addr, caPath string) {
 	t.Helper()
@@ -90,11 +33,7 @@ func startServer(t *testing.T) (addr, caPath string) {
 	}
 	t.Cleanup(store.Close)
 
-	caPath, certPath, keyPath := genCerts(t, t.TempDir())
-	creds, err := credentials.NewServerTLSFromFile(certPath, keyPath)
-	if err != nil {
-		t.Fatal(err)
-	}
+	creds, caPath := testcert.Credentials(t)
 	srv := service.NewServer(store, auth.NewIssuer("integration", time.Hour), zap.NewNop(), grpc.Creds(creds))
 	lis, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -110,7 +49,7 @@ func newClient(t *testing.T, caPath string) *app.App {
 	a, err := app.New(app.Config{
 		DataDir: t.TempDir(),
 		Dial: func(server string) (app.Remote, error) {
-			return api.Dial(server, caPath, false)
+			return api.Dial(server, caPath)
 		},
 		Derive: func(login, password string) (crypto.Keys, error) {
 			return crypto.DeriveWith(crypto.Params{Time: 1, Memory: 1024, Threads: 1}, login, password)
@@ -138,7 +77,7 @@ func TestFullScenario(t *testing.T) {
 		vault.New("note", "", vault.Text{Content: "text"}),
 		vault.New("file", "", vault.Binary{FileName: "f.bin", Content: make([]byte, 1<<20)}),
 		vault.New("card", "bank", vault.Card{Number: "4111111111111111", Expiry: "12/30", CVV: "123"}),
-		vault.New("otp", "", vault.OTP{Secret: "JBSWY3DPEHPK3PXP"}),
+		vault.New("otp", "", vault.OTP{Secret: otpSecret}),
 	}
 	for _, r := range records {
 		if _, err := laptop.Add(ctx, r); err != nil {
@@ -189,7 +128,7 @@ func TestFullScenario(t *testing.T) {
 
 func TestUntrustedCertificate(t *testing.T) {
 	addr, _ := startServer(t)
-	otherCA, _, _ := genCerts(t, t.TempDir())
+	otherCA := testcert.Write(t, t.TempDir()).CA
 	a := newClient(t, otherCA)
 	if _, err := a.Register(context.Background(), addr, "it-untrusted", "integration-password"); err == nil {
 		t.Fatal("connected with an untrusted certificate")

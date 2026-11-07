@@ -3,6 +3,7 @@ package vault
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/gob"
 	"errors"
 	"fmt"
@@ -42,6 +43,9 @@ func ParseKind(s string) (Kind, error) {
 // MaxNameLength is the maximum number of characters in a record name.
 const MaxNameLength = 256
 
+// MaxMetaSize is the maximum size of the record meta information in bytes.
+const MaxMetaSize = 64 << 10
+
 // Errors returned by the package.
 var (
 	ErrIDMismatch = errors.New("record id does not match the item id")
@@ -55,6 +59,7 @@ type Data interface {
 }
 
 // Record is a decrypted entry. Meta is free text such as a site, a bank or recovery codes.
+// Name and Meta are stored in plain text so the server can search by them; the rest is encrypted.
 type Record struct {
 	ID        uuid.UUID
 	Name      string
@@ -63,7 +68,23 @@ type Record struct {
 	Data      Data
 }
 
-func init() {
+// Sealed is an encrypted record as stored on the server and in the local cache.
+// Name and Meta are bound to the payload, so changing them breaks decryption.
+type Sealed struct {
+	Name    string
+	Meta    string
+	Payload []byte
+}
+
+type secret struct {
+	ID        uuid.UUID
+	UpdatedAt time.Time
+	Data      Data
+}
+
+// RegisterTypes registers the Data implementations with encoding/gob. It must be called once before
+// Encrypt or Decrypt.
+func RegisterTypes() {
 	gob.Register(Credentials{})
 	gob.Register(Text{})
 	gob.Register(Binary{})
@@ -103,46 +124,57 @@ func (r Record) Validate() error {
 	if utf8.RuneCountInString(r.Name) > MaxNameLength {
 		return fmt.Errorf("name must be at most %d characters", MaxNameLength)
 	}
+	if len(r.Meta) > MaxMetaSize {
+		return fmt.Errorf("meta must be at most %d KiB", MaxMetaSize>>10)
+	}
 	if r.Data == nil {
 		return ErrNoData
 	}
 	return r.Data.Validate()
 }
 
-// Encrypt validates and serializes the whole record, then seals it with encKey bound to the record ID.
-// The result must fit MaxPayloadSize.
-func Encrypt(r Record, encKey []byte) ([]byte, error) {
+// Encrypt validates the record and seals everything except the name and meta with encKey, binding
+// the ciphertext to the record ID, name and meta. The payload must fit MaxPayloadSize.
+func Encrypt(r Record, encKey []byte) (Sealed, error) {
 	if err := r.Validate(); err != nil {
-		return nil, err
+		return Sealed{}, err
 	}
 	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(r); err != nil {
-		return nil, fmt.Errorf("encode record: %w", err)
+	if err := gob.NewEncoder(&buf).Encode(secret{ID: r.ID, UpdatedAt: r.UpdatedAt, Data: r.Data}); err != nil {
+		return Sealed{}, fmt.Errorf("encode record: %w", err)
 	}
-	payload, err := crypto.Seal(encKey, buf.Bytes(), r.ID[:])
+	payload, err := crypto.Seal(encKey, buf.Bytes(), additionalData(r.ID, r.Name, r.Meta))
 	if err != nil {
-		return nil, err
+		return Sealed{}, err
 	}
 	if len(payload) > MaxPayloadSize {
-		return nil, fmt.Errorf("record is larger than %d MiB with metadata", MaxPayloadSize>>20)
+		return Sealed{}, fmt.Errorf("record is larger than %d MiB", MaxPayloadSize>>20)
 	}
-	return payload, nil
+	return Sealed{Name: r.Name, Meta: r.Meta, Payload: payload}, nil
 }
 
-// Decrypt opens a payload of the item id and checks that the record inside carries the same ID.
-func Decrypt(id uuid.UUID, payload, encKey []byte) (Record, error) {
-	plain, err := crypto.Open(encKey, payload, id[:])
+// Decrypt opens a sealed record of the item id and checks that the record inside carries the same ID.
+func Decrypt(id uuid.UUID, s Sealed, encKey []byte) (Record, error) {
+	plain, err := crypto.Open(encKey, s.Payload, additionalData(id, s.Name, s.Meta))
 	if err != nil {
 		return Record{}, err
 	}
-	var r Record
-	if err := gob.NewDecoder(bytes.NewReader(plain)).Decode(&r); err != nil {
+	var sec secret
+	if err := gob.NewDecoder(bytes.NewReader(plain)).Decode(&sec); err != nil {
 		return Record{}, fmt.Errorf("decode record: %w", err)
 	}
-	if r.ID != id {
+	if sec.ID != id {
 		return Record{}, ErrIDMismatch
 	}
-	return r, nil
+	return Record{ID: id, Name: s.Name, Meta: s.Meta, UpdatedAt: sec.UpdatedAt, Data: sec.Data}, nil
+}
+
+func additionalData(id uuid.UUID, name, meta string) []byte {
+	ad := make([]byte, 0, len(id)+4+len(name)+len(meta))
+	ad = append(ad, id[:]...)
+	ad = binary.BigEndian.AppendUint32(ad, uint32(len(name)))
+	ad = append(ad, name...)
+	return append(ad, meta...)
 }
 
 func normalize(data Data) Data {

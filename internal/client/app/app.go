@@ -50,9 +50,10 @@ type Remote interface {
 	SetToken(token string)
 	Register(ctx context.Context, login string, authKey []byte) (string, error)
 	Login(ctx context.Context, login string, authKey []byte) (string, error)
-	Upsert(ctx context.Context, id uuid.UUID, baseVersion int64, payload []byte) (api.Item, error)
+	Upsert(ctx context.Context, id uuid.UUID, baseVersion int64, content api.Content) (api.Item, error)
 	Delete(ctx context.Context, id uuid.UUID, baseVersion int64) (api.Item, error)
 	Sync(ctx context.Context, since int64) ([]api.Item, int64, bool, error)
+	Search(ctx context.Context, query string) ([]api.Item, bool, error)
 	Close() error
 }
 
@@ -222,21 +223,93 @@ func (a *App) List(kind vault.Kind) ([]vault.Record, error) {
 		if e.Deleted {
 			continue
 		}
-		r, err := vault.Decrypt(id, e.Payload, a.encKey)
+		r, err := a.decrypt(id, sealedEntry(e))
 		if err != nil {
-			return nil, fmt.Errorf("decrypt %s: %w", id, err)
+			return nil, err
 		}
 		if kind == "" || r.Kind() == kind {
 			out = append(out, r)
 		}
 	}
-	slices.SortFunc(out, func(x, y vault.Record) int {
+	sortRecords(out)
+	return out, nil
+}
+
+// SearchResult is the outcome of Search. Partial means the server had more matches than fit one
+// response; Offline means the server was unreachable and only the local cache was searched.
+type SearchResult struct {
+	Records []vault.Record
+	Partial bool
+	Offline bool
+}
+
+// Search returns the records whose name or meta contains query, ignoring case, sorted by name.
+// The server does the filtering, so only matching records are downloaded and decrypted; local changes
+// not sent yet take precedence. When the server is unreachable the local cache is searched instead.
+func (a *App) Search(ctx context.Context, query string) (SearchResult, error) {
+	if err := a.requireKey(); err != nil {
+		return SearchResult{}, err
+	}
+	var res SearchResult
+	var items []api.Item
+	remote, err := a.connect()
+	if err == nil {
+		items, res.Partial, err = remote.Search(ctx, query)
+	}
+	if err != nil {
+		if err = a.fail(err); !errors.Is(err, api.ErrUnavailable) {
+			return SearchResult{}, err
+		}
+		res.Offline = true
+	}
+
+	found := make(map[uuid.UUID]vault.Sealed, len(items))
+	for _, it := range items {
+		found[it.ID] = vault.Sealed{Name: it.Name, Meta: it.Meta, Payload: it.Payload}
+	}
+	for id, e := range a.cache.Entries {
+		if !res.Offline && !e.Dirty {
+			continue
+		}
+		delete(found, id)
+		if !e.Deleted && (containsFold(e.Name, query) || containsFold(e.Meta, query)) {
+			found[id] = sealedEntry(e)
+		}
+	}
+	for id, s := range found {
+		r, err := a.decrypt(id, s)
+		if err != nil {
+			return SearchResult{}, err
+		}
+		res.Records = append(res.Records, r)
+	}
+	sortRecords(res.Records)
+	return res, nil
+}
+
+func (a *App) decrypt(id uuid.UUID, s vault.Sealed) (vault.Record, error) {
+	r, err := vault.Decrypt(id, s, a.encKey)
+	if err != nil {
+		return vault.Record{}, fmt.Errorf("decrypt %s: %w", id, err)
+	}
+	return r, nil
+}
+
+func sealedEntry(e store.Entry) vault.Sealed {
+	return vault.Sealed{Name: e.Name, Meta: e.Meta, Payload: e.Payload}
+}
+
+func containsFold(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+func sortRecords(records []vault.Record) {
+	slices.SortFunc(records, func(x, y vault.Record) int {
 		if c := strings.Compare(strings.ToLower(x.Name), strings.ToLower(y.Name)); c != 0 {
 			return c
 		}
 		return strings.Compare(x.ID.String(), y.ID.String())
 	})
-	return out, nil
 }
 
 // Get returns the record with the ID.
@@ -248,7 +321,7 @@ func (a *App) Get(id uuid.UUID) (vault.Record, error) {
 	if !ok || e.Deleted {
 		return vault.Record{}, ErrNotFound
 	}
-	return vault.Decrypt(id, e.Payload, a.encKey)
+	return vault.Decrypt(id, sealedEntry(e), a.encKey)
 }
 
 // Find returns the record whose ID starts with query or whose name equals it.
@@ -283,11 +356,11 @@ func (a *App) Add(ctx context.Context, r vault.Record) (Report, error) {
 	if _, ok := a.cache.Get(r.ID); ok {
 		return Report{}, fmt.Errorf("record %s already exists", r.ID)
 	}
-	payload, err := vault.Encrypt(r, a.encKey)
+	sealed, err := vault.Encrypt(r, a.encKey)
 	if err != nil {
 		return Report{}, err
 	}
-	a.cache.Put(r.ID, store.Entry{Dirty: true, Payload: payload})
+	a.cache.Put(r.ID, store.Entry{Dirty: true, Name: sealed.Name, Meta: sealed.Meta, Payload: sealed.Payload})
 	return a.commit(ctx)
 }
 
@@ -301,11 +374,11 @@ func (a *App) Update(ctx context.Context, r vault.Record) (Report, error) {
 		return Report{}, ErrNotFound
 	}
 	r.Touch()
-	payload, err := vault.Encrypt(r, a.encKey)
+	sealed, err := vault.Encrypt(r, a.encKey)
 	if err != nil {
 		return Report{}, err
 	}
-	e.Payload, e.Dirty = payload, true
+	e.Name, e.Meta, e.Payload, e.Dirty = sealed.Name, sealed.Meta, sealed.Payload, true
 	a.cache.Put(r.ID, e)
 	return a.commit(ctx)
 }

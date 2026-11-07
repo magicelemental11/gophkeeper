@@ -1,7 +1,7 @@
 CREATE TABLE users (
-    id         BIGSERIAL PRIMARY KEY,
-    login      TEXT UNIQUE NOT NULL,
-    auth_hash  TEXT NOT NULL,
+    id         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    login      VARCHAR(64) UNIQUE NOT NULL,
+    auth_hash  VARCHAR(60) NOT NULL,
     revision   BIGINT NOT NULL DEFAULT 0,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -12,6 +12,8 @@ CREATE TABLE items (
     version    BIGINT NOT NULL,
     revision   BIGINT NOT NULL,
     deleted    BOOLEAN NOT NULL DEFAULT false,
+    name       VARCHAR(256) NOT NULL DEFAULT '',
+    meta       TEXT NOT NULL DEFAULT '',
     payload    BYTEA,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (user_id, id)

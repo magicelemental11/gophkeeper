@@ -8,14 +8,16 @@ import (
 )
 
 func toProto(it storage.Item) *pb.Item {
-	return &pb.Item{
+	return pb.Item_builder{
 		Id:        it.ID.String(),
 		Version:   it.Version,
 		Revision:  it.Revision,
 		Deleted:   it.Deleted,
+		Name:      it.Name,
+		Meta:      it.Meta,
 		Payload:   it.Payload,
 		UpdatedAt: timestamppb.New(it.UpdatedAt),
-	}
+	}.Build()
 }
 
 func toProtoList(items []storage.Item) []*pb.Item {

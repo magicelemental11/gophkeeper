@@ -3,7 +3,6 @@ package cli
 import (
 	"errors"
 	"fmt"
-	"os"
 
 	"github.com/spf13/cobra"
 
@@ -31,7 +30,7 @@ func (r *runner) registerCmd() *cobra.Command {
 				return err
 			}
 			defer a.Close()
-			rep, err := a.Register(cmd.Context(), r.config().Server, login, password)
+			rep, err := a.Register(cmd.Context(), r.cfg.Server, login, password)
 			if err != nil {
 				return err
 			}
@@ -64,7 +63,7 @@ func (r *runner) loginCmd() *cobra.Command {
 				return err
 			}
 			defer a.Close()
-			rep, err := a.Login(cmd.Context(), r.config().Server, login, password)
+			rep, err := a.Login(cmd.Context(), r.cfg.Server, login, password)
 			if err != nil {
 				return err
 			}
@@ -125,7 +124,11 @@ func (r *runner) askLogin(login string) (string, error) {
 }
 
 func (r *runner) newPassword() (string, error) {
-	if p := os.Getenv(config.EnvPassword); p != "" {
+	p, ok, err := config.Password()
+	switch {
+	case err != nil:
+		return "", err
+	case ok:
 		return p, crypto.ValidatePassword(p)
 	}
 	password, err := r.deps.Prompter.Password("New master password: ")

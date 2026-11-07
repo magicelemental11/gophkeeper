@@ -19,6 +19,13 @@ import (
 
 var key = bytes.Repeat([]byte{3}, crypto.KeySize)
 
+var otpSecret = base32.StdEncoding.EncodeToString([]byte("otp-key-01"))
+
+func TestMain(m *testing.M) {
+	RegisterTypes()
+	os.Exit(m.Run())
+}
+
 func TestParseKind(t *testing.T) {
 	for _, k := range Kinds {
 		if got, err := ParseKind(string(k)); err != nil || got != k {
@@ -65,7 +72,7 @@ func TestValidate(t *testing.T) {
 		{"card expiry sign", New("card", "", withCard(func(c *Card) { c.Expiry = "+1/30" })), false},
 		{"card short cvv", New("card", "", withCard(func(c *Card) { c.CVV = "12" })), false},
 		{"card letter cvv", New("card", "", withCard(func(c *Card) { c.CVV = "12a" })), false},
-		{"otp", New("otp", "", OTP{Secret: "JBSWY3DPEHPK3PXP"}), true},
+		{"otp", New("otp", "", OTP{Secret: otpSecret}), true},
 		{"otp bad secret", New("otp", "", OTP{Secret: "not base32!"}), false},
 	}
 	for _, tt := range tests {
@@ -100,15 +107,18 @@ func TestEncryptDecrypt(t *testing.T) {
 		New("note", "", Text{Content: "привет"}),
 		New("photo", "", Binary{FileName: "a.png", Content: []byte{0, 1, 2}}),
 		New("card", "bank", Card{Number: "4111111111111111", Holder: "A", Expiry: "12/30", CVV: "123"}),
-		New("totp", "", OTP{Secret: "JBSWY3DPEHPK3PXP", Issuer: "Example"}),
+		New("totp", "", OTP{Secret: otpSecret, Issuer: "Example"}),
 	}
 	for _, r := range records {
 		t.Run(string(r.Kind()), func(t *testing.T) {
-			payload, err := Encrypt(r, key)
+			sealed, err := Encrypt(r, key)
 			if err != nil {
 				t.Fatal(err)
 			}
-			got, err := Decrypt(r.ID, payload, key)
+			if sealed.Name != r.Name || sealed.Meta != r.Meta || bytes.Contains(sealed.Payload, []byte(r.Name)) {
+				t.Fatalf("sealed: %+v", sealed)
+			}
+			got, err := Decrypt(r.ID, sealed, key)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -119,10 +129,28 @@ func TestEncryptDecrypt(t *testing.T) {
 			if !reflect.DeepEqual(got, r) {
 				t.Fatalf("got %+v, want %+v", got, r)
 			}
-			if _, err := Decrypt(uuid.New(), payload, key); !errors.Is(err, crypto.ErrDecrypt) {
+			if _, err := Decrypt(uuid.New(), sealed, key); !errors.Is(err, crypto.ErrDecrypt) {
 				t.Fatalf("other id: %v", err)
 			}
+			renamed := sealed
+			renamed.Name += "x"
+			if _, err := Decrypt(r.ID, renamed, key); !errors.Is(err, crypto.ErrDecrypt) {
+				t.Fatalf("changed name: %v", err)
+			}
+
 		})
+	}
+}
+
+func TestNameMetaBoundary(t *testing.T) {
+	r := New("ab", "c", Text{Content: "x"})
+	sealed, err := Encrypt(r, key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sealed.Name, sealed.Meta = "a", "bc"
+	if _, err := Decrypt(r.ID, sealed, key); !errors.Is(err, crypto.ErrDecrypt) {
+		t.Fatalf("got %v", err)
 	}
 }
 
@@ -138,12 +166,12 @@ func TestEncryptErrors(t *testing.T) {
 
 func TestBinaryAtLimitFitsServerPayload(t *testing.T) {
 	r := New("big", "", Binary{FileName: "big.bin", Content: make([]byte, MaxBinarySize)})
-	payload, err := Encrypt(r, key)
+	sealed, err := Encrypt(r, key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(payload) > 11<<20 {
-		t.Fatalf("payload %d bytes exceeds the server limit", len(payload))
+	if len(sealed.Payload) > 11<<20 {
+		t.Fatalf("payload %d bytes exceeds the server limit", len(sealed.Payload))
 	}
 }
 
@@ -171,9 +199,13 @@ func TestReadBinaryFile(t *testing.T) {
 }
 
 func TestEncryptTooLarge(t *testing.T) {
-	r := New("big", strings.Repeat("m", 1<<20), Binary{Content: make([]byte, MaxBinarySize)})
+	r := New("big", "", Text{Content: strings.Repeat("t", MaxPayloadSize)})
 	if _, err := Encrypt(r, key); err == nil || !strings.Contains(err.Error(), "larger than") {
 		t.Fatalf("got %v", err)
+	}
+	r = New("big", strings.Repeat("m", MaxMetaSize+1), Text{Content: "t"})
+	if _, err := Encrypt(r, key); err == nil || !strings.Contains(err.Error(), "meta") {
+		t.Fatalf("meta: %v", err)
 	}
 }
 
@@ -181,15 +213,15 @@ func TestDecryptIDMismatch(t *testing.T) {
 	r := New("x", "", Text{Content: "a"})
 	other := uuid.New()
 	var buf bytes.Buffer
-	if err := gob.NewEncoder(&buf).Encode(r); err != nil {
+	if err := gob.NewEncoder(&buf).Encode(secret{ID: r.ID, Data: r.Data}); err != nil {
 		t.Fatal(err)
 	}
-	payload, _ := crypto.Seal(key, buf.Bytes(), other[:])
-	if _, err := Decrypt(other, payload, key); !errors.Is(err, ErrIDMismatch) {
+	payload, _ := crypto.Seal(key, buf.Bytes(), additionalData(other, "x", ""))
+	if _, err := Decrypt(other, Sealed{Name: "x", Payload: payload}, key); !errors.Is(err, ErrIDMismatch) {
 		t.Fatalf("got %v", err)
 	}
-	garbage, _ := crypto.Seal(key, []byte("not gob"), other[:])
-	if _, err := Decrypt(other, garbage, key); err == nil {
+	garbage, _ := crypto.Seal(key, []byte("not gob"), additionalData(other, "x", ""))
+	if _, err := Decrypt(other, Sealed{Name: "x", Payload: garbage}, key); err == nil {
 		t.Fatal("garbage decoded")
 	}
 }
@@ -243,9 +275,9 @@ func TestOTPDefaultsAndRemaining(t *testing.T) {
 		t.Fatalf("got %s, %v, %v", code, left, err)
 	}
 	for name, bad := range map[string]OTP{
-		"digits": {Secret: "JBSWY3DPEHPK3PXP", Digits: 9},
-		"period": {Secret: "JBSWY3DPEHPK3PXP", Period: -1},
-		"alg":    {Secret: "JBSWY3DPEHPK3PXP", Algorithm: "MD5"},
+		"digits": {Secret: otpSecret, Digits: 9},
+		"period": {Secret: otpSecret, Period: -1},
+		"alg":    {Secret: otpSecret, Algorithm: "MD5"},
 		"secret": {Secret: ""},
 	} {
 		if _, _, err := bad.Code(time.Now()); err == nil {
@@ -255,27 +287,27 @@ func TestOTPDefaultsAndRemaining(t *testing.T) {
 }
 
 func TestParseOTPURI(t *testing.T) {
-	o, err := ParseOTPURI("otpauth://totp/Example:alice@example.com?secret=JBSWY3DPEHPK3PXP&issuer=Example")
-	want := OTP{Issuer: "Example", Account: "alice@example.com", Secret: "JBSWY3DPEHPK3PXP", Digits: 6, Period: 30, Algorithm: "SHA1"}
+	o, err := ParseOTPURI("otpauth://totp/Example:alice@example.com?secret=" + otpSecret + "&issuer=Example")
+	want := OTP{Issuer: "Example", Account: "alice@example.com", Secret: otpSecret, Digits: 6, Period: 30, Algorithm: "SHA1"}
 	if err != nil || o != want {
 		t.Fatalf("got %+v, %v", o, err)
 	}
-	o, err = ParseOTPURI("otpauth://totp/Corp:bob?secret=JBSWY3DPEHPK3PXP&digits=8&period=60&algorithm=sha256")
-	want = OTP{Issuer: "Corp", Account: "bob", Secret: "JBSWY3DPEHPK3PXP", Digits: 8, Period: 60, Algorithm: "SHA256"}
+	o, err = ParseOTPURI("otpauth://totp/Corp:bob?secret=" + otpSecret + "&digits=8&period=60&algorithm=sha256")
+	want = OTP{Issuer: "Corp", Account: "bob", Secret: otpSecret, Digits: 8, Period: 60, Algorithm: "SHA256"}
 	if err != nil || o != want {
 		t.Fatalf("got %+v, %v", o, err)
 	}
-	o, err = ParseOTPURI("otpauth://totp/carol?secret=JBSWY3DPEHPK3PXP")
+	o, err = ParseOTPURI("otpauth://totp/carol?secret=" + otpSecret)
 	if err != nil || o.Account != "carol" || o.Issuer != "" {
 		t.Fatalf("got %+v, %v", o, err)
 	}
 	for _, bad := range []string{
-		"https://totp/x?secret=JBSWY3DPEHPK3PXP",
-		"otpauth://hotp/x?secret=JBSWY3DPEHPK3PXP",
+		"https://totp/x?secret=" + otpSecret,
+		"otpauth://hotp/x?secret=" + otpSecret,
 		"otpauth://totp/x?secret=1111",
-		"otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=six",
-		"otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&period=0x",
-		"otpauth://totp/x?secret=JBSWY3DPEHPK3PXP&digits=4",
+		"otpauth://totp/x?secret=" + otpSecret + "&digits=six",
+		"otpauth://totp/x?secret=" + otpSecret + "&period=0x",
+		"otpauth://totp/x?secret=" + otpSecret + "&digits=4",
 		"::not a uri",
 	} {
 		if _, err := ParseOTPURI(bad); err == nil {

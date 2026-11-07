@@ -36,7 +36,7 @@ func newApp(t *testing.T, srv *testserver.Server, dir string) *app.App {
 	a, err := app.New(app.Config{
 		DataDir: dir,
 		Dial: func(string) (app.Remote, error) {
-			return api.Dial(testserver.Address, "", true, srv.DialOption())
+			return api.Dial(testserver.Address, srv.CA, srv.DialOption())
 		},
 		Derive: fastDerive,
 		Now:    func() time.Time { return time.Date(2026, 10, 31, 12, 0, 0, 0, time.UTC) },
@@ -121,7 +121,7 @@ func TestNothingSecretOnDisk(t *testing.T) {
 	if _, err := a.Register(ctx, server, "alice", password); err != nil {
 		t.Fatal(err)
 	}
-	secrets := []string{"hunter2-secret", "plaintext-note-body", "4111111111111111", "my-record-name", "my-meta", password}
+	secrets := []string{"hunter2-secret", "plaintext-note-body", "4111111111111111", password}
 	if _, err := a.Add(ctx, vault.New("my-record-name", "my-meta", vault.Credentials{Login: "x", Password: "hunter2-secret"})); err != nil {
 		t.Fatal(err)
 	}
@@ -318,6 +318,59 @@ func TestFind(t *testing.T) {
 	}
 	if cards, _ := a.List(vault.KindCard); len(cards) != 0 {
 		t.Fatalf("list card: %v", cards)
+	}
+}
+
+func searchNames(t *testing.T, a *app.App, query string, offline bool) []string {
+	t.Helper()
+	res, err := a.Search(ctx, query)
+	if err != nil || res.Offline != offline || res.Partial {
+		t.Fatalf("search %q: %+v, %v", query, res, err)
+	}
+	out := make([]string, len(res.Records))
+	for i, r := range res.Records {
+		out[i] = r.Name
+	}
+	return out
+}
+
+func TestSearch(t *testing.T) {
+	srv := testserver.Start(t)
+	a := newApp(t, srv, t.TempDir())
+	if _, err := a.Search(ctx, "x"); !errors.Is(err, app.ErrNotLoggedIn) {
+		t.Fatalf("not logged in: %v", err)
+	}
+	if _, err := a.Register(ctx, server, "alice", password); err != nil {
+		t.Fatal(err)
+	}
+	mail := vault.New("Mail", "work", vault.Text{Content: "a"})
+	for _, r := range []vault.Record{mail, vault.New("bank", "mail account", vault.Text{Content: "b"}), vault.New("note", "", vault.Text{Content: "c"})} {
+		if _, err := a.Add(ctx, r); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := searchNames(t, a, "MAIL", false); !equal(got, []string{"bank", "Mail"}) {
+		t.Fatalf("online: %v", got)
+	}
+
+	srv.Down()
+	if rep, err := a.Add(ctx, vault.New("mail offline", "", vault.Text{Content: "d"})); err != nil || !rep.Offline {
+		t.Fatalf("add offline: %+v, %v", rep, err)
+	}
+	if _, err := a.Delete(ctx, mail.ID); err != nil {
+		t.Fatal(err)
+	}
+	if got := searchNames(t, a, "mail", true); !equal(got, []string{"bank", "mail offline"}) {
+		t.Fatalf("offline: %v", got)
+	}
+	srv.Up()
+	if got := searchNames(t, a, "mail", false); !equal(got, []string{"bank", "mail offline"}) {
+		t.Fatalf("unsent changes: %v", got)
+	}
+
+	srv.Store.Err = errors.New("db down")
+	if _, err := a.Search(ctx, "mail"); err == nil {
+		t.Fatal("server error ignored")
 	}
 }
 

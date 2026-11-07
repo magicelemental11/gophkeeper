@@ -10,6 +10,10 @@ import (
 	"github.com/google/uuid"
 )
 
+func content(name string) Content {
+	return Content{Name: name, Meta: "meta of " + name, Payload: []byte(name)}
+}
+
 func newUser(t *testing.T, s *Storage, login string) int64 {
 	t.Helper()
 	id, err := s.CreateUser(context.Background(), login, "hash")
@@ -25,23 +29,23 @@ func TestItemLifecycle(t *testing.T) {
 	user := newUser(t, s, "alice")
 	id := uuid.New()
 
-	if _, err := s.Upsert(ctx, user, id, 3, []byte("x")); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Upsert(ctx, user, id, 3, content("x")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("update of missing item: %v", err)
 	}
-	created, err := s.Upsert(ctx, user, id, 0, []byte("v1"))
-	if err != nil || created.Version != 1 || created.Revision != 1 || !bytes.Equal(created.Payload, []byte("v1")) {
+	created, err := s.Upsert(ctx, user, id, 0, content("v1"))
+	if err != nil || created.Version != 1 || created.Revision != 1 || !bytes.Equal(created.Payload, []byte("v1")) || created.Name != "v1" {
 		t.Fatalf("create: %+v, %v", created, err)
 	}
 
 	var conflict *ConflictError
-	if _, err := s.Upsert(ctx, user, id, 0, []byte("dup")); !errors.As(err, &conflict) || conflict.Current.Version != 1 {
+	if _, err := s.Upsert(ctx, user, id, 0, content("dup")); !errors.As(err, &conflict) || conflict.Current.Version != 1 {
 		t.Fatalf("stale upsert: %v", err)
 	}
 	if conflict.Error() == "" {
 		t.Fatal("empty error text")
 	}
 
-	updated, err := s.Upsert(ctx, user, id, 1, []byte("v2"))
+	updated, err := s.Upsert(ctx, user, id, 1, content("v2"))
 	if err != nil || updated.Version != 2 || updated.Revision != 2 {
 		t.Fatalf("update: %+v, %v", updated, err)
 	}
@@ -50,7 +54,7 @@ func TestItemLifecycle(t *testing.T) {
 		t.Fatalf("stale delete: %v", err)
 	}
 	deleted, err := s.Delete(ctx, user, id, 2)
-	if err != nil || !deleted.Deleted || deleted.Payload != nil || deleted.Version != 3 || deleted.Revision != 3 {
+	if err != nil || !deleted.Deleted || deleted.Payload != nil || deleted.Name != "" || deleted.Meta != "" || deleted.Version != 3 || deleted.Revision != 3 {
 		t.Fatalf("delete: %+v, %v", deleted, err)
 	}
 	again, err := s.Delete(ctx, user, id, 0)
@@ -58,18 +62,18 @@ func TestItemLifecycle(t *testing.T) {
 		t.Fatalf("repeated delete: %+v, %v", again, err)
 	}
 
-	restored, err := s.Upsert(ctx, user, id, 3, []byte("v4"))
+	restored, err := s.Upsert(ctx, user, id, 3, content("v4"))
 	if err != nil || restored.Deleted || restored.Version != 4 || restored.Revision != 4 {
 		t.Fatalf("restore: %+v, %v", restored, err)
 	}
 	got, err := s.Get(ctx, user, id)
-	if err != nil || got.Version != 4 || !bytes.Equal(got.Payload, []byte("v4")) {
+	if err != nil || got.Version != 4 || !bytes.Equal(got.Payload, []byte("v4")) || got.Meta != "meta of v4" {
 		t.Fatalf("get: %+v, %v", got, err)
 	}
 	if _, err := s.Delete(ctx, user, uuid.New(), 1); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("delete missing: %v", err)
 	}
-	if _, err := s.Upsert(ctx, 999, uuid.New(), 0, []byte("x")); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Upsert(ctx, 999, uuid.New(), 0, content("x")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown user: %v", err)
 	}
 }
@@ -81,7 +85,7 @@ func TestChangesSince(t *testing.T) {
 	a, b := uuid.New(), uuid.New()
 	mustUpsert := func(id uuid.UUID, base int64) {
 		t.Helper()
-		if _, err := s.Upsert(ctx, user, id, base, []byte("p")); err != nil {
+		if _, err := s.Upsert(ctx, user, id, base, content("p")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -113,6 +117,43 @@ func TestChangesSince(t *testing.T) {
 	}
 }
 
+func TestSearch(t *testing.T) {
+	s := newTestStorage(t)
+	ctx := context.Background()
+	alice, bob := newUser(t, s, "alice"), newUser(t, s, "bob")
+	ids := map[string]uuid.UUID{}
+	for _, name := range []string{"Mail", "bank", "Mailbox", "deleted", "100%_off"} {
+		ids[name] = uuid.New()
+		if _, err := s.Upsert(ctx, alice, ids[name], 0, content(name)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Upsert(ctx, bob, uuid.New(), 0, content("mail")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Delete(ctx, alice, ids["deleted"], 1); err != nil {
+		t.Fatal(err)
+	}
+
+	items, more, err := s.Search(ctx, alice, "MAIL", 1<<20)
+	if err != nil || more || len(items) != 2 || items[0].Name != "Mail" || items[1].Name != "Mailbox" {
+		t.Fatalf("by name: %+v, %v, %v", items, more, err)
+	}
+	if items, _, err := s.Search(ctx, alice, "of bank", 1<<20); err != nil || len(items) != 1 || items[0].ID != ids["bank"] {
+		t.Fatalf("by meta: %+v, %v", items, err)
+	}
+	if items, _, err := s.Search(ctx, alice, "%_", 1<<20); err != nil || len(items) != 1 || items[0].ID != ids["100%_off"] {
+		t.Fatalf("wildcards: %+v, %v", items, err)
+	}
+	if items, more, err := s.Search(ctx, alice, "nothing", 1<<20); err != nil || more || len(items) != 0 {
+		t.Fatalf("no match: %+v, %v, %v", items, more, err)
+	}
+	items, more, err = s.Search(ctx, alice, "", 0)
+	if err != nil || !more || len(items) != 1 || items[0].Name != "100%_off" {
+		t.Fatalf("first page: %+v, %v, %v", items, more, err)
+	}
+}
+
 func TestPageLen(t *testing.T) {
 	tests := []struct {
 		sizes []int
@@ -137,13 +178,13 @@ func TestItemsIsolatedByUser(t *testing.T) {
 	ctx := context.Background()
 	alice, bob := newUser(t, s, "alice"), newUser(t, s, "bob")
 	id := uuid.New()
-	if _, err := s.Upsert(ctx, alice, id, 0, []byte("secret")); err != nil {
+	if _, err := s.Upsert(ctx, alice, id, 0, content("secret")); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.Get(ctx, bob, id); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("get: %v", err)
 	}
-	if _, err := s.Upsert(ctx, bob, id, 1, []byte("x")); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Upsert(ctx, bob, id, 1, content("x")); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("upsert: %v", err)
 	}
 	if _, err := s.Delete(ctx, bob, id, 1); !errors.Is(err, ErrNotFound) {
@@ -162,7 +203,7 @@ func TestConcurrentUpsert(t *testing.T) {
 	ctx := context.Background()
 	user := newUser(t, s, "alice")
 	id := uuid.New()
-	if _, err := s.Upsert(ctx, user, id, 0, []byte("v1")); err != nil {
+	if _, err := s.Upsert(ctx, user, id, 0, content("v1")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -171,7 +212,7 @@ func TestConcurrentUpsert(t *testing.T) {
 	errs := make(chan error, n)
 	for range n {
 		wg.Go(func() {
-			_, err := s.Upsert(ctx, user, id, 1, []byte("v2"))
+			_, err := s.Upsert(ctx, user, id, 1, content("v2"))
 			errs <- err
 		})
 	}

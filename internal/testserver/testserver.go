@@ -1,4 +1,5 @@
-// Package testserver runs the GophKeeper server with an in-memory store over an in-memory connection, for tests.
+// Package testserver runs the GophKeeper server with an in-memory store over an in-memory TLS connection,
+// for tests.
 package testserver
 
 import (
@@ -11,12 +12,14 @@ import (
 
 	"go.uber.org/zap"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
 	"google.golang.org/grpc/test/bufconn"
 
 	"github.com/magicelemental11/gophkeeper/internal/client/api"
 	"github.com/magicelemental11/gophkeeper/internal/server/auth"
 	"github.com/magicelemental11/gophkeeper/internal/server/memstore"
 	"github.com/magicelemental11/gophkeeper/internal/server/service"
+	"github.com/magicelemental11/gophkeeper/internal/testcert"
 )
 
 // Address is the target to dial; any value works since connections go through the in-memory listener.
@@ -26,6 +29,10 @@ const Address = "passthrough:///bufnet"
 type Server struct {
 	Store  *memstore.Store
 	Issuer *auth.Issuer
+	// CA is the path of the certificate that verifies the server.
+	CA string
+
+	creds credentials.TransportCredentials
 
 	mu  sync.Mutex
 	lis *bufconn.Listener
@@ -36,6 +43,7 @@ type Server struct {
 func Start(tb testing.TB) *Server {
 	tb.Helper()
 	s := &Server{Store: memstore.New(), Issuer: auth.NewIssuer("test-secret", time.Hour)}
+	s.creds, s.CA = testcert.Credentials(tb)
 	s.Up()
 	tb.Cleanup(s.Down)
 	return s
@@ -49,7 +57,7 @@ func (s *Server) Up() {
 		return
 	}
 	s.lis = bufconn.Listen(1 << 20)
-	s.srv = service.NewServer(s.Store, s.Issuer, zap.NewNop())
+	s.srv = service.NewServer(s.Store, s.Issuer, zap.NewNop(), grpc.Creds(s.creds))
 	go s.srv.Serve(s.lis)
 }
 
@@ -80,7 +88,7 @@ func (s *Server) DialOption() grpc.DialOption {
 // Dial returns a client of the server, closed when the test ends.
 func (s *Server) Dial(tb testing.TB) *api.Client {
 	tb.Helper()
-	c, err := api.Dial(Address, "", true, s.DialOption())
+	c, err := api.Dial(Address, s.CA, s.DialOption())
 	if err != nil {
 		tb.Fatal(err)
 	}

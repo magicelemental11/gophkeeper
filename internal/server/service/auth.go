@@ -82,7 +82,7 @@ func (s *AuthServer) token(userID int64) (*pb.AuthResponse, error) {
 	if err != nil {
 		return nil, s.internal("issue token", err)
 	}
-	return &pb.AuthResponse{Token: tok}, nil
+	return pb.AuthResponse_builder{Token: tok}.Build(), nil
 }
 
 func (s *AuthServer) internal(op string, err error) error {

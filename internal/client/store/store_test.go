@@ -41,7 +41,7 @@ func TestCache(t *testing.T) {
 		t.Fatalf("empty: %+v, %v", c, err)
 	}
 	a, b := uuid.New(), uuid.New()
-	c.Put(a, Entry{Version: 1, Payload: []byte("a")})
+	c.Put(a, Entry{Version: 1, Name: "na", Meta: "ma", Payload: []byte("a")})
 	c.Put(b, Entry{Dirty: true, Payload: []byte("b")})
 	if err := c.Save(); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestCache(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if e, ok := c.Get(a); !ok || e.Version != 1 || string(e.Payload) != "a" {
+	if e, ok := c.Get(a); !ok || e.Version != 1 || e.Name != "na" || e.Meta != "ma" || string(e.Payload) != "a" {
 		t.Fatalf("a: %+v", e)
 	}
 	if d := c.Dirty(); len(d) != 1 || d[0] != b {

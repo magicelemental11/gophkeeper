@@ -89,6 +89,38 @@
         ]
       }
     },
+    "/v1/items": {
+      "get": {
+        "summary": "Search returns the live items whose name or meta contains the query, ignoring case, ordered by name.\nThe response is cut to fit the message size limit, has_more tells that more items match.",
+        "operationId": "VaultService_Search",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SearchResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "query",
+            "description": "Substring to look for in the name or meta, ignoring case. An empty query matches every live item.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "VaultService"
+        ]
+      }
+    },
     "/v1/items/{id}": {
       "get": {
         "summary": "Get returns a single item, including tombstones.",
@@ -243,7 +275,15 @@
         "payload": {
           "type": "string",
           "format": "byte",
-          "description": "Encrypted record, up to 11 MiB."
+          "description": "Encrypted record data, up to 11 MiB."
+        },
+        "name": {
+          "type": "string",
+          "description": "Record name, 1 to 256 characters."
+        },
+        "meta": {
+          "type": "string",
+          "description": "Free-text meta information, up to 64 KiB."
         }
       },
       "description": "UpsertRequest creates or replaces an item."
@@ -325,15 +365,41 @@
         "payload": {
           "type": "string",
           "format": "byte",
-          "description": "Encrypted record, opaque to the server."
+          "description": "Encrypted record data, opaque to the server."
         },
         "updatedAt": {
           "type": "string",
           "format": "date-time",
           "description": "Time of the last change on the server."
+        },
+        "name": {
+          "type": "string",
+          "description": "Record name in plain text, empty for a tombstone."
+        },
+        "meta": {
+          "type": "string",
+          "description": "Free-text meta information in plain text, empty for a tombstone."
         }
       },
       "description": "Item is an encrypted record as the server sees it."
+    },
+    "v1SearchResponse": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Item"
+          },
+          "description": "Matching items, tombstones excluded."
+        },
+        "hasMore": {
+          "type": "boolean",
+          "description": "True when the response was cut to fit the message size limit."
+        }
+      },
+      "description": "SearchResponse lists the matching items ordered by name."
     },
     "v1SyncResponse": {
       "type": "object",

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 	"errors"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"go.uber.org/zap"
@@ -21,12 +22,19 @@ const MaxPayloadSize = 11 << 20
 // A response always holds at least one item.
 const SyncPageSize = 12 << 20
 
+// MaxNameLength is the maximum number of characters in an item name.
+const MaxNameLength = 256
+
+// MaxMetaSize is the maximum size of the item meta information in bytes.
+const MaxMetaSize = 64 << 10
+
 // ItemStore keeps encrypted items; *storage.Storage implements it.
 type ItemStore interface {
-	Upsert(ctx context.Context, userID int64, id uuid.UUID, baseVersion int64, payload []byte) (storage.Item, error)
+	Upsert(ctx context.Context, userID int64, id uuid.UUID, baseVersion int64, c storage.Content) (storage.Item, error)
 	Delete(ctx context.Context, userID int64, id uuid.UUID, baseVersion int64) (storage.Item, error)
 	Get(ctx context.Context, userID int64, id uuid.UUID) (storage.Item, error)
 	ChangesSince(ctx context.Context, userID int64, since int64, maxBytes int) (storage.Changes, error)
+	Search(ctx context.Context, userID int64, query string, maxBytes int) ([]storage.Item, bool, error)
 }
 
 // VaultServer implements pb.VaultServiceServer. The user always comes from the token in the context.
@@ -48,10 +56,11 @@ func (s *VaultServer) Upsert(ctx context.Context, req *pb.UpsertRequest) (*pb.It
 	if err != nil {
 		return nil, err
 	}
-	if n := len(req.GetPayload()); n == 0 || n > MaxPayloadSize {
-		return nil, status.Error(codes.InvalidArgument, "payload must be 1 byte to 11 MiB")
+	c := storage.Content{Name: req.GetName(), Meta: req.GetMeta(), Payload: req.GetPayload()}
+	if err := validateContent(c); err != nil {
+		return nil, err
 	}
-	it, err := s.items.Upsert(ctx, userID, id, req.GetBaseVersion(), req.GetPayload())
+	it, err := s.items.Upsert(ctx, userID, id, req.GetBaseVersion(), c)
 	return s.result(it, err)
 }
 
@@ -88,7 +97,35 @@ func (s *VaultServer) Sync(ctx context.Context, req *pb.SyncRequest) (*pb.SyncRe
 	if err != nil {
 		return nil, s.mapError(err)
 	}
-	return &pb.SyncResponse{Items: toProtoList(ch.Items), Revision: ch.Revision, HasMore: ch.More}, nil
+	return pb.SyncResponse_builder{Items: toProtoList(ch.Items), Revision: ch.Revision, HasMore: ch.More}.Build(), nil
+}
+
+// Search returns the live items whose name or meta contains the query.
+func (s *VaultServer) Search(ctx context.Context, req *pb.SearchRequest) (*pb.SearchResponse, error) {
+	userID, err := currentUser(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if len(req.GetQuery()) > MaxMetaSize {
+		return nil, status.Error(codes.InvalidArgument, "query is too long")
+	}
+	items, more, err := s.items.Search(ctx, userID, req.GetQuery(), SyncPageSize)
+	if err != nil {
+		return nil, s.mapError(err)
+	}
+	return pb.SearchResponse_builder{Items: toProtoList(items), HasMore: more}.Build(), nil
+}
+
+func validateContent(c storage.Content) error {
+	switch n := utf8.RuneCountInString(c.Name); {
+	case n == 0 || n > MaxNameLength:
+		return status.Error(codes.InvalidArgument, "name must be 1 to 256 characters")
+	case len(c.Meta) > MaxMetaSize:
+		return status.Error(codes.InvalidArgument, "meta must be at most 64 KiB")
+	case len(c.Payload) == 0 || len(c.Payload) > MaxPayloadSize:
+		return status.Error(codes.InvalidArgument, "payload must be 1 byte to 11 MiB")
+	}
+	return nil
 }
 
 func (s *VaultServer) target(ctx context.Context, rawID string, baseVersion int64) (int64, uuid.UUID, error) {
