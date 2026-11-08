@@ -1,0 +1,428 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "gophkeeper.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "AuthService",
+      "description": "AuthService registers users and issues access tokens."
+    },
+    {
+      "name": "VaultService",
+      "description": "VaultService stores encrypted items of the authenticated user.\nEvery call requires the \"authorization: Bearer \u003ctoken\u003e\" metadata."
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/auth/login": {
+      "post": {
+        "summary": "Login checks the credentials and returns a token.",
+        "operationId": "AuthService_Login",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AuthResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AuthRequest carries the login and the key derived from the password on the client.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1AuthRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AuthService"
+        ]
+      }
+    },
+    "/v1/auth/register": {
+      "post": {
+        "summary": "Register creates a user and returns a token for it.",
+        "operationId": "AuthService_Register",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1AuthResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "body",
+            "description": "AuthRequest carries the login and the key derived from the password on the client.",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/v1AuthRequest"
+            }
+          }
+        ],
+        "tags": [
+          "AuthService"
+        ]
+      }
+    },
+    "/v1/items": {
+      "get": {
+        "summary": "Search returns the live items whose name or meta contains the query, ignoring case, ordered by name.\nThe response is cut to fit the message size limit, has_more tells that more items match.",
+        "operationId": "VaultService_Search",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SearchResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "query",
+            "description": "Substring to look for in the name or meta, ignoring case. An empty query matches every live item.",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "VaultService"
+        ]
+      }
+    },
+    "/v1/items/{id}": {
+      "get": {
+        "summary": "Get returns a single item, including tombstones.",
+        "operationId": "VaultService_Get",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1Item"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Record UUID.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "VaultService"
+        ]
+      },
+      "delete": {
+        "summary": "Delete turns the item into a tombstone. A version mismatch returns ABORTED like Upsert.",
+        "operationId": "VaultService_Delete",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1Item"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Record UUID.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "baseVersion",
+            "description": "Version the deletion is based on.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "VaultService"
+        ]
+      },
+      "put": {
+        "summary": "Upsert creates an item (base_version 0) or replaces it when base_version matches the stored version.\nA version mismatch returns ABORTED with the current Item in the status details.",
+        "operationId": "VaultService_Upsert",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1Item"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "description": "Record UUID.",
+            "in": "path",
+            "required": true,
+            "type": "string"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/VaultServiceUpsertBody"
+            }
+          }
+        ],
+        "tags": [
+          "VaultService"
+        ]
+      }
+    },
+    "/v1/sync": {
+      "get": {
+        "summary": "Sync returns the items changed after since_revision in revision order. Large responses are split\ninto pages: repeat the call with the returned revision while has_more is set.",
+        "operationId": "VaultService_Sync",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1SyncResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "sinceRevision",
+            "description": "Last revision the client has seen, 0 for everything.",
+            "in": "query",
+            "required": false,
+            "type": "string",
+            "format": "int64"
+          }
+        ],
+        "tags": [
+          "VaultService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "VaultServiceUpsertBody": {
+      "type": "object",
+      "properties": {
+        "baseVersion": {
+          "type": "string",
+          "format": "int64",
+          "description": "Version the change is based on, 0 for a new record."
+        },
+        "payload": {
+          "type": "string",
+          "format": "byte",
+          "description": "Encrypted record data, up to 11 MiB."
+        },
+        "name": {
+          "type": "string",
+          "description": "Record name, 1 to 256 characters."
+        },
+        "meta": {
+          "type": "string",
+          "description": "Free-text meta information, up to 64 KiB."
+        }
+      },
+      "description": "UpsertRequest creates or replaces an item."
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": true
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1AuthRequest": {
+      "type": "object",
+      "properties": {
+        "login": {
+          "type": "string",
+          "description": "Login of the user, 3 to 64 characters."
+        },
+        "authKey": {
+          "type": "string",
+          "format": "byte",
+          "description": "Authentication key, exactly 32 bytes. The password itself never leaves the client."
+        }
+      },
+      "description": "AuthRequest carries the login and the key derived from the password on the client."
+    },
+    "v1AuthResponse": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "JWT valid for 24 hours."
+        }
+      },
+      "description": "AuthResponse carries the access token."
+    },
+    "v1Item": {
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Record UUID chosen by the client."
+        },
+        "version": {
+          "type": "string",
+          "format": "int64",
+          "description": "Incremented on every change, used for optimistic locking."
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "User-wide revision of the last change, used for synchronization."
+        },
+        "deleted": {
+          "type": "boolean",
+          "description": "True for a deleted record (tombstone), the payload is empty then."
+        },
+        "payload": {
+          "type": "string",
+          "format": "byte",
+          "description": "Encrypted record data, opaque to the server."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Time of the last change on the server."
+        },
+        "name": {
+          "type": "string",
+          "description": "Record name in plain text, empty for a tombstone."
+        },
+        "meta": {
+          "type": "string",
+          "description": "Free-text meta information in plain text, empty for a tombstone."
+        }
+      },
+      "description": "Item is an encrypted record as the server sees it."
+    },
+    "v1SearchResponse": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Item"
+          },
+          "description": "Matching items, tombstones excluded."
+        },
+        "hasMore": {
+          "type": "boolean",
+          "description": "True when the response was cut to fit the message size limit."
+        }
+      },
+      "description": "SearchResponse lists the matching items ordered by name."
+    },
+    "v1SyncResponse": {
+      "type": "object",
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/v1Item"
+          },
+          "description": "Items changed after since_revision, including tombstones."
+        },
+        "revision": {
+          "type": "string",
+          "format": "int64",
+          "description": "Revision to send as since_revision next time: the current revision of the user,\nor the revision of the last returned item when has_more is set."
+        },
+        "hasMore": {
+          "type": "boolean",
+          "description": "True when the response was cut to fit the message size limit and more changes follow."
+        }
+      },
+      "description": "SyncResponse lists changed items in revision order."
+    }
+  }
+}
